@@ -10,7 +10,7 @@ import pickle
 from torch import optim
 import collections
 
-def test_joint_icl_Mount(model, dataset, old_embeddings, old_User, epoch, w=None):
+def test_joint_icl_Mount(model, dataset, old_embeddings, old_User, old_Item, epoch, w=None):
     Meta_model=model
     Meta_model.eval()
 
@@ -45,22 +45,48 @@ def test_joint_icl_Mount(model, dataset, old_embeddings, old_User, epoch, w=None
             total_batch = len(users) // u_batch_size + 1
         
         user_output, item_output, allLayerEmbs, degree_molecular, degree_Denominator, old_user_degree, old_item_degree=Meta_model.get_layer_weights()
+        batch_match_users,match_items,weight_user_itself,weight_items_itself = None,None,None,None
+        if world.predict_item:
+            print("caculate item knn")
+            activeItem_tensor = torch.Tensor(activeItem_all).long()
+            activeItem_tensor = activeItem_tensor.to(world.device)
+
+            knn_0 = old_Item @ old_Item[activeItem_tensor].t() 
+            knn_1 = old_Item.pow(2).sum(dim=1).unsqueeze(1)
+            knn_2 = old_Item.pow(2)[activeItem_tensor].sum(dim=1).unsqueeze(0)
+            knn = knn_1 + knn_2 -2 * knn_0
+            knn = knn.pow(2)
+            weight_items_itself ,batch_match_items_itself = torch.topk(knn, world.inference_k+1, largest=False, dim=1)
+            match_items = batch_match_items_itself[:,1:world.inference_k+1]
+            if world.knn_imp:
+                weight_items_itself = weight_items_itself[:,1:world.inference_k+1]
+                weight_items_itself = weight_items_itself/torch.sum(weight_items_itself,dim=1)
+
+            match_items.to(world.device)
+            # batch_mtach_items = None
+            del knn_0, knn_1, knn_2, knn, batch_match_items_itself, activeItem_tensor
+        # print("DONE")
 
         for batch_users in tqdm(utils.minibatch(users, batch_size=u_batch_size)):
             batch_users_tensor = torch.Tensor(batch_users).long()
             batch_users_gpu = batch_users_tensor.to(world.device)
             users_list.append(batch_users)
 
-            knn_0 = old_User[batch_users_gpu.long()] @ old_User.t() 
-            knn_1 = old_User[batch_users_gpu.long()].pow(2).sum(dim=1).unsqueeze(1)
-            knn_2 = old_User.pow(2).sum(dim=1).unsqueeze(0)
-            knn = knn_1 + knn_2 -2 * knn_0
-            knn = knn.pow(2)
-            batch_mtach_users_itself = torch.topk(knn, world.inference_k+1, largest=False, dim=1)[1]
-            batch_mtach_users = batch_mtach_users_itself[:,1:world.inference_k+1]
+            if world.predict_user:
+                knn_0 = old_User[batch_users_gpu.long()] @ old_User.t() 
+                knn_1 = old_User[batch_users_gpu.long()].pow(2).sum(dim=1).unsqueeze(1)
+                knn_2 = old_User.pow(2).sum(dim=1).unsqueeze(0)
+                knn = knn_1 + knn_2 -2 * knn_0
+                knn = knn.pow(2)
+                weight_user_itself, batch_match_users_itself = torch.topk(knn, world.inference_k+1, largest=False, dim=1)
+                batch_match_users = batch_match_users_itself[:,1:world.inference_k+1]
+                if world.knn_imp:
+                    weight_user_itself = weight_user_itself[:,1:world.inference_k+1]
+                    weight_user_itself = weight_user_itself/torch.sum(weight_user_itself,dim=1).unsqueeze(dim=1)
+ 
+                del knn_0, knn_1, knn_2, knn, batch_match_users_itself
 
-
-            rating = Meta_model.get_finalprediction(old_embeddings, batch_users_gpu, allLayerEmbs, degree_molecular, degree_Denominator, old_user_degree, old_item_degree, activeUser_all, activeItem_all, dataset.trained_user, dataset.trained_item, batch_mtach_users)
+            rating = Meta_model.get_finalprediction(old_embeddings, batch_users_gpu, allLayerEmbs, degree_molecular, degree_Denominator, old_user_degree, old_item_degree, activeUser_all, activeItem_all, dataset.trained_user, dataset.trained_item, batch_match_users,match_items,weight_user_itself,weight_items_itself)
             Rating_cpu=rating.cpu()
             test_Dict_onebatch={}
             for i in range(batch_users_tensor.size()[0]):
@@ -135,7 +161,7 @@ def test_joint_icl_Mount(model, dataset, old_embeddings, old_User, epoch, w=None
         return (results, results_ac, len(groundTrue_list_ac), results_inac, len(groundTrue_list_inac))
 
 def train_joint(model, dataset, old_embeddings, opt_lgcn, old_knowledge, epoch):
-    print("OLD Embedding",old_embeddings['embedding_user'][1],type(old_knowledge))
+    # print("OLD Embedding",old_embeddings['embedding_user'][1],type(old_knowledge))
     Meta_model=model
     Meta_model.train()
 
@@ -159,36 +185,42 @@ def train_joint(model, dataset, old_embeddings, opt_lgcn, old_knowledge, epoch):
     aver_icl_regloss = 0.
 
     for (batch_i,(batch_users, batch_pos, batch_neg)) in enumerate(utils.minibatch(users, posItems, negItems, batch_size=world.config['bpr_batch_size'])):
+        batch_match_items_pos, batch_match_users = None, None
+        # KNN POS
+        if world.train_item or 1:
+            knn_0 = old_Item[batch_pos.long()] @ old_Item.t() 
+            knn_1 = old_Item[batch_pos.long()].pow(2).sum(dim=1).unsqueeze(1)
+            knn_2 = old_Item.pow(2).sum(dim=1).unsqueeze(0)
+            # print("KNN",knn_0.shape,knn_1.shape,knn_2.shape)
+            knn = knn_1 + knn_2 -2 * knn_0
+            knn = knn.pow(2)
+            knn[:,dataset.active_item_now]=np.inf
+            batch_mtach_items_itself = torch.topk(knn, world.icl_k+1, largest=False, dim=1)[1]
+            batch_match_items_pos = batch_mtach_items_itself[:,1:world.icl_k+1]
+            del knn_0, knn_1, knn_2, knn 
 
-        knn_0 = old_Item[batch_pos.long()] @ old_Item.t() 
-        knn_1 = old_Item[batch_pos.long()].pow(2).sum(dim=1).unsqueeze(1)
-        knn_2 = old_Item.pow(2).sum(dim=1).unsqueeze(0)
-        # print("KNN",knn_0.shape,knn_1.shape,knn_2.shape)
-        knn = knn_1 + knn_2 -2 * knn_0
-        knn = knn.pow(2)
-        knn[:,dataset.active_item_now]=np.inf
-        batch_mtach_items_itself = torch.topk(knn, world.icl_k+1, largest=False, dim=1)[1]
-        batch_mtach_items = batch_mtach_items_itself[:,1:world.icl_k+1]
 
-        # knn_0 = old_User[batch_users.long()] @ old_User.t() 
-        # knn_1 = old_User[batch_users.long()].pow(2).sum(dim=1).unsqueeze(1)
-        # knn_2 = old_User.pow(2).sum(dim=1).unsqueeze(0)
-        # # print("KNN",knn_0.shape,knn_1.shape,knn_2.shape)
-        # knn = knn_1 + knn_2 -2 * knn_0
-        # knn = knn.pow(2)
-        # knn[:,dataset.active_item_now]=np.inf
-        # batch_mtach_items_itself = torch.topk(knn, world.icl_k+1, largest=False, dim=1)[1]
-        # batch_mtach_items = batch_mtach_items_itself[:,1:world.icl_k+1]
+        if world.train_user or 1:
+            #KNN user
+            knn_0 = old_User[batch_users.long()] @ old_User.t() 
+            knn_1 = old_User[batch_users.long()].pow(2).sum(dim=1).unsqueeze(1)
+            knn_2 = old_User.pow(2).sum(dim=1).unsqueeze(0)
+            # print("KNN",knn_0.shape,knn_1.shape,knn_2.shape)
+            knn = knn_1 + knn_2 -2 * knn_0
+            knn = knn.pow(2)
+            knn[:,dataset.active_user_now]=np.inf
+            batch_mtach_users_itself = torch.topk(knn, world.icl_k+1, largest=False, dim=1)[1]
+            batch_match_users = batch_mtach_users_itself[:,1:world.icl_k+1]
 
-        del knn_0, knn_1, knn_2, knn 
+            del knn_0, knn_1, knn_2, knn 
 
-        loss, loss1, loss2, icl_regloss = Meta_model.get_our_loss(old_embeddings, batch_users, batch_pos, batch_neg, batch_mtach_items)
+        loss, loss1, loss2, icl_regloss = Meta_model.get_our_loss(old_embeddings, batch_users, batch_pos, batch_neg, batch_match_items_pos, batch_match_users)
         opt_lgcn.zero_grad()
         loss.backward()
         opt_lgcn.step()
         aver_loss+=loss.cpu().item()
         aver_loss1+=loss1.cpu().item()
-        aver_loss2+=loss2.cpu().item()
+        # aver_loss2+=loss2.cpu().item()
         aver_icl_regloss+=icl_regloss.cpu().item()
 
     return f"[Train aver loss{aver_loss:.4e}]"

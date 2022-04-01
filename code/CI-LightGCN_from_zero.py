@@ -1,3 +1,4 @@
+import json
 import world
 import utils
 import torch
@@ -24,27 +25,27 @@ model_name=world.model_name
 results_handle_LGCN_stack=[]
 for stage in range(world.Meta_start-1,world.FR_end):
     if stage==world.Meta_start-1:
-        # pass
-        pritrainFile = f"static_lgcn-{world.dataset}-{world.config['lightGCN_n_layers']}-{world.config['latent_dim_rec']}-{stage-1}.npy-.pth.tar"
-        pretrain_oldweights_load=join(world.FILE_PATH,pritrainFile)
-        dataset_pre=dataloader.Loader_pre(stage,path="../data/"+world.dataset)
-        Pretrain_model = model.LightGCN_handle(world.config, dataset_pre, 'origin_all')
-        Pretrain_model.load_state_dict(torch.load(f'./checkpoints/static_base_LightGCN_{world.dataset}-3-64-28.npy-.pth.tar',map_location=torch.device('cpu')))
-        Pretrain_model=Pretrain_model.to(world.device)
-        print(f'#################### Baisc LightGCN has already trained at 0-{stage-1} and saved at ./checkpoints/static_base_LightGCN_{world.dataset}-3-64-28.npy-.pth.tar #######################')
+        pass
+        # pritrainFile = f"static_lgcn-{world.dataset}-{world.config['lightGCN_n_layers']}-{world.config['latent_dim_rec']}-{stage-1}.npy-.pth.tar"
+        # pretrain_oldweights_load=join(world.FILE_PATH,pritrainFile)
+        # dataset_pre=dataloader.Loader_pre(stage,path="../data/"+world.dataset)
+        # Pretrain_model = model.LightGCN_handle(world.config, dataset_pre, 'origin_all')
+        # Pretrain_model.load_state_dict(torch.load(f'./checkpoints/static_base_LightGCN_{world.dataset}-3-64-28.npy-.pth.tar',map_location=torch.device('cpu')))
+        # Pretrain_model=Pretrain_model.to(world.device)
+        # print(f'#################### Baisc LightGCN has already trained at 0-{stage-1} and saved at ./checkpoints/static_base_LightGCN_{world.dataset}-3-64-28.npy-.pth.tar #######################')
 
-        _0, _1, old_allLayerEmbs=Pretrain_model.get_layer_weights()
-        old_dict=collections.OrderedDict({'embedding_user':[copy.deepcopy(old_allLayerEmbs[0][0].detach()), copy.deepcopy(old_allLayerEmbs[1][0].detach()), copy.deepcopy(old_allLayerEmbs[2][0].detach()), copy.deepcopy(old_allLayerEmbs[3][0].detach())],'embedding_item':[copy.deepcopy(old_allLayerEmbs[0][1].detach()), copy.deepcopy(old_allLayerEmbs[1][1].detach()), copy.deepcopy(old_allLayerEmbs[2][1].detach()), copy.deepcopy(old_allLayerEmbs[3][1].detach())]})
-        torch.save(Pretrain_model.state_dict(), utils.getFileName(stage))#old LGCN权重
-        torch.save(old_dict, os.path.join(f'../start_from_zero/{world.dataset}', f"Embeddings_at_stage_{stage}.pth.tar"))
-        del Pretrain_model, old_dict, _0, _1, old_allLayerEmbs
+        # _0, _1, old_allLayerEmbs=Pretrain_model.get_layer_weights()
+        # old_dict=collections.OrderedDict({'embedding_user':[copy.deepcopy(old_allLayerEmbs[0][0].detach()), copy.deepcopy(old_allLayerEmbs[1][0].detach()), copy.deepcopy(old_allLayerEmbs[2][0].detach()), copy.deepcopy(old_allLayerEmbs[3][0].detach())],'embedding_item':[copy.deepcopy(old_allLayerEmbs[0][1].detach()), copy.deepcopy(old_allLayerEmbs[1][1].detach()), copy.deepcopy(old_allLayerEmbs[2][1].detach()), copy.deepcopy(old_allLayerEmbs[3][1].detach())]})
+        # torch.save(Pretrain_model.state_dict(), utils.getFileName(stage))#old LGCN权重
+        # torch.save(old_dict, os.path.join(f'../start_from_zero/{world.dataset}-fix_CED', f"Embeddings_at_stage_{stage}.pth.tar"))
+        # del Pretrain_model, old_dict, _0, _1, old_allLayerEmbs
 
     else:
         stagestart=time.time()
         weight_file_load = utils.getFileName(stage-1)
         weight_file_save =utils.getFileName(stage)
-        embeddings_load=os.path.join(f'../start_from_zero/{world.dataset}', f"Embeddings_at_stage_{stage-1}.pth.tar")
-        embeddings_save=os.path.join(f'../start_from_zero/{world.dataset}', f"Embeddings_at_stage_{stage}.pth.tar")
+        embeddings_load=os.path.join(f'../start_from_zero/{world.dataset}-fix_CED', f"Embeddings_at_stage_{stage-1}.pth.tar")
+        embeddings_save=os.path.join(f'../start_from_zero/{world.dataset}-fix_CED', f"Embeddings_at_stage_{stage}.pth.tar")
 
         dataset_LGCN=dataloader.Loader_hat(stage,path="../data/"+world.dataset)
         LGCN_joint = model.LightGCN_joint(world.config, dataset_LGCN, 'degree')
@@ -72,6 +73,7 @@ for stage in range(world.Meta_start-1,world.FR_end):
         old_knowledge = (copy.deepcopy(oldknn_UserEmb.detach()), copy.deepcopy(oldknn_ItemEmb.detach()))
         LastStage_embeddings=torch.load(embeddings_load, map_location=torch.device('cpu'))#这里面有四层内容，每层都是【user，item】
         Old_User = copy.deepcopy(oldknn_UserEmb.detach())
+        Old_Item = copy.deepcopy(oldknn_ItemEmb.detach())
 
         #======================training phase=============================
         for epoch in range(world.finetune_epochs):
@@ -83,13 +85,13 @@ for stage in range(world.Meta_start-1,world.FR_end):
             if epoch%100==0:
                 teststart1=time.time()
                 # (test_result, test_result_ac, user_ac, test_result_inac, user_inac)=Procedure_CI_LightGCN_zero.test_joint_icl(LGCN_joint, dataset_LGCN, LastStage_embeddings, 0)
-                (test_result, test_result_ac, user_ac, test_result_inac, user_inac)=Procedure_CI_LightGCN_zero.test_joint_icl_Mount(LGCN_joint, dataset_LGCN, LastStage_embeddings, Old_User, 0)
+                (test_result, test_result_ac, user_ac, test_result_inac, user_inac)=Procedure_CI_LightGCN_zero.test_joint_icl_Mount(LGCN_joint, dataset_LGCN, LastStage_embeddings, Old_User,Old_Item, 0)
                 print('CI-LightGCN result at stage: ' + str(stage) +' result: '+str(test_result))
 
 
         #=================================按stage统计结果===================================
         # (test_result, test_result_ac, user_ac, test_result_inac, user_inac)=Procedure_CI_LightGCN_zero.test_joint_icl(LGCN_joint, dataset_LGCN, LastStage_embeddings, 0)
-        (test_result, test_result_ac, user_ac, test_result_inac, user_inac)=Procedure_CI_LightGCN_zero.test_joint_icl_Mount(LGCN_joint, dataset_LGCN, LastStage_embeddings, Old_User, 0)
+        (test_result, test_result_ac, user_ac, test_result_inac, user_inac)=Procedure_CI_LightGCN_zero.test_joint_icl_Mount(LGCN_joint, dataset_LGCN, LastStage_embeddings, Old_User, Old_Item, 0)
         results_handle_LGCN_stack.append([copy.deepcopy(np.array(test_result['precision'])),copy.deepcopy(np.array(test_result['recall'])),copy.deepcopy(np.array(test_result['ndcg']))])
 
         for s_len in range(len(results_handle_LGCN_stack)):
@@ -144,3 +146,5 @@ elif world.dataset=='news':
     results_handle_LGCN_performance['ndcg']=N
 print('###############  Results of all testing stages: {} #############'.format(str(results_handle_LGCN_stack)))
 print('###############  Over all results of CI-LightGCN is: {} #############'.format(str(results_handle_LGCN_performance)))
+# with open(world.output_dict,'w') as f:
+#     json.dump(f,results_handle_LGCN_stack)

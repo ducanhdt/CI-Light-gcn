@@ -93,6 +93,14 @@ radio_loss = args.radio_loss
 icl_reg = args.icl_reg
 
 A=args.A
+
+predict_user = args.predict_user
+predict_item = args.predict_item
+train_user = args.train_user
+train_item = args.train_item
+
+knn_imp = args.knn_imp
+
 inference_k=args.inference_k
 from warnings import simplefilter
 simplefilter(action="ignore", category=FutureWarning)

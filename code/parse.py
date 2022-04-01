@@ -41,5 +41,15 @@ def parse_args():
     parser.add_argument('--icl_reg', type=float,default=1.0, help="ICL radio")
     parser.add_argument('--A', type=float,default=0.0, help="Inference_radio (1-A)*old+A*new")
     parser.add_argument('--inference_k', type=int,default=0, help="ICL KNN's k in inference")
+    parser.add_argument('--output_dict', type=str,default=0, help="path to output final result")
     
+    parser.add_argument('--predict_user',  action='store_true', help="use CED for user when predict")
+    parser.add_argument('--predict_item',  action='store_true', help="use CED for item when predict")
+    parser.add_argument('--train_user',    action='store_true', help="use CED for compute loss user when train")
+    parser.add_argument('--train_item',    action='store_true', help="use CED for compute loss item when train")
+    
+    parser.add_argument('--knn_imp',    action='store_true', help="use knn imp")
+    
+
+
     return parser.parse_args()
